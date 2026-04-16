@@ -1,0 +1,27 @@
+services:
+  kenichi-explicit:
+    image: ghcr.io/cytsai/kenichi-profile-ext-server:latest
+    environment:
+      - GALLERY_DATA_DIR=/data
+      # Set in a .env file alongside docker-compose.yml:
+      #   GALLERY_ED25519_PUBLIC_KEY=<base64-encoded 32-byte public key>
+    ports:
+      - "8080:8080"
+      # Bind only to loopback — cloudflared tunnels to this port.
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - /srv/kenichi-explicit/data:/data
+    restart: unless-stopped
+    depends_on:
+      - cloudflared
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      # Set CLOUDFLARE_TUNNEL_TOKEN in a .env file.
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    # Tunnel config (Cloudflare dashboard) should route:
+    #   kenichi-explicit.photocat.blue      -> http://kenichi-explicit:8080
+    #   sync.kenichi-explicit.photocat.blue -> http://kenichi-explicit:8081

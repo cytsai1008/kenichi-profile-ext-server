@@ -1,0 +1,22 @@
+# Local development stack — no cloudflared, no real disk writes, no auth secrets needed.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Then point the sync script at localhost:
+#   GALLERY_SYNC_HOST=http://localhost:8081 \
+#   GALLERY_CF_CLIENT_ID=dev \
+#   GALLERY_CF_CLIENT_SECRET=dev \
+#   npm run gallery:sync:dry
+#
+# Public placeholder images are served on http://localhost:8080/_viewer/<path>
+
+services:
+  kenichi-explicit:
+    build: .
+    environment:
+      - GALLERY_DEV_MODE=true
+      - GALLERY_DEV_SKIP_AUTH=true
+    ports:
+      - "8080:8080"
+      - "8081:8081"
