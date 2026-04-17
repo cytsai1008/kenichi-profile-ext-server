@@ -20,9 +20,6 @@ type Config struct {
 	// CF-Access checks when DevSkipAuth is also true. Disk writes still happen so
 	// upload functionality can be verified locally. Enabled by --dev flag or GALLERY_DEV_MODE=true.
 	DevMode bool
-	// DevSkipAuth skips all CF-Access header checks in dev mode.
-	// Enabled by GALLERY_DEV_SKIP_AUTH=true.
-	DevSkipAuth bool
 	// Ed25519PublicKey is used by the private server to verify request signatures.
 	// Required in production mode. Set via GALLERY_ED25519_PUBLIC_KEY (base64-encoded).
 	Ed25519PublicKey ed25519.PublicKey
@@ -36,7 +33,6 @@ func Load(devFlag bool) *Config {
 		PublicPort:  envInt("GALLERY_PUBLIC_PORT", 8080),
 		PrivatePort: envInt("GALLERY_PRIVATE_PORT", 8081),
 		DevMode:     devFlag || envBool("GALLERY_DEV_MODE"),
-		DevSkipAuth: envBool("GALLERY_DEV_SKIP_AUTH"),
 	}
 
 	if !cfg.DevMode {

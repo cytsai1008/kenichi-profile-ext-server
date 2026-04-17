@@ -39,7 +39,7 @@ type uploadResponse struct {
 // RunPrivate starts the private HTTP server on cfg.PrivatePort.
 // Returns a non-nil error if the listener fails.
 func RunPrivate(cfg *config.Config) error {
-	verifier := auth.NewVerifier(cfg.Ed25519PublicKey, cfg.DevMode, cfg.DevSkipAuth)
+	verifier := auth.NewVerifier(cfg.Ed25519PublicKey, cfg.DevMode)
 
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return fmt.Errorf("[private] create data dir: %w", err)
@@ -123,7 +123,7 @@ func (p *privateHandler) withSmallBodyAuth(next http.HandlerFunc) http.HandlerFu
 // Manifest handlers
 // ---------------------------------------------------------------------------
 
-func (p *privateHandler) getManifest(w http.ResponseWriter, r *http.Request) {
+func (p *privateHandler) getManifest(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	m := p.store.Get()
 	_ = json.NewEncoder(w).Encode(m)
@@ -361,7 +361,7 @@ func serveStoredFile(w http.ResponseWriter, r *http.Request, dir, rel string) {
 		}
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	stat, err := f.Stat()
 	if err != nil || stat.IsDir() {
 		log.Printf("[private] serve not found (stat): %s", rel)

@@ -22,21 +22,19 @@ const nonceTTL = 10 * time.Minute
 
 // Verifier checks auth on private-server requests.
 type Verifier struct {
-	pubKey      ed25519.PublicKey
-	devMode     bool
-	devSkipAuth bool
+	pubKey  ed25519.PublicKey
+	devMode bool
 
 	mu     sync.Mutex
 	nonces map[string]time.Time
 }
 
 // NewVerifier creates a Verifier. In dev mode pubKey may be nil.
-func NewVerifier(pubKey ed25519.PublicKey, devMode, devSkipAuth bool) *Verifier {
+func NewVerifier(pubKey ed25519.PublicKey, devMode bool) *Verifier {
 	v := &Verifier{
-		pubKey:      pubKey,
-		devMode:     devMode,
-		devSkipAuth: devSkipAuth,
-		nonces:      make(map[string]time.Time),
+		pubKey:  pubKey,
+		devMode: devMode,
+		nonces:  make(map[string]time.Time),
 	}
 	go v.sweepNonces()
 	return v
@@ -56,26 +54,10 @@ func (v *Verifier) sweepNonces() {
 	}
 }
 
-// CheckCFAccess validates CF-Access service token headers.
-// The check is skipped only when both devMode and devSkipAuth are true; devSkipAuth
-// alone is not enough so a misconfigured production container cannot bypass auth.
-func (v *Verifier) CheckCFAccess(r *http.Request) error {
-	if v.devMode && v.devSkipAuth {
-		return nil
-	}
-	if r.Header.Get("CF-Access-Client-Id") == "" || r.Header.Get("CF-Access-Client-Secret") == "" {
-		return fmt.Errorf("missing CF-Access service token headers")
-	}
-	return nil
-}
-
 // VerifySmallBody performs full signature verification for requests with a small,
 // already-read body (GET, DELETE, PUT /_manifest/...).
 // bodyBytes may be nil or empty for requests with no body.
 func (v *Verifier) VerifySmallBody(r *http.Request, bodyBytes []byte) error {
-	if err := v.CheckCFAccess(r); err != nil {
-		return err
-	}
 	if v.devMode {
 		return nil
 	}
@@ -89,9 +71,6 @@ func (v *Verifier) VerifySmallBody(r *http.Request, bodyBytes []byte) error {
 // VerifyUploadBody performs full signature verification after an upload body has been
 // streamed and its SHA-256 computed. Call this after streaming to temp file.
 func (v *Verifier) VerifyUploadBody(r *http.Request, computedHashHex string) error {
-	if err := v.CheckCFAccess(r); err != nil {
-		return err
-	}
 	if v.devMode {
 		return nil
 	}
