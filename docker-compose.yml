@@ -1,6 +1,6 @@
 services:
   kenichi-explicit:
-    image: ghcr.io/cytsai/kenichi-profile-ext-server:latest
+    image: ghcr.io/cytsai1008/kenichi-profile-ext-server:latest
     env_file:
       - .env
     environment:
