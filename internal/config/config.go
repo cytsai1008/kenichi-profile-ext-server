@@ -16,8 +16,9 @@ type Config struct {
 	PublicPort int
 	// PrivatePort is the port the private server listens on (default 8081).
 	PrivatePort int
-	// DevMode disables disk writes on uploads, serves placeholder data, and
-	// relaxes signature verification. Enabled by --dev flag or GALLERY_DEV_MODE=true.
+	// DevMode relaxes signature verification (no Ed25519 key required) and skips
+	// CF-Access checks when DevSkipAuth is also true. Disk writes still happen so
+	// upload functionality can be verified locally. Enabled by --dev flag or GALLERY_DEV_MODE=true.
 	DevMode bool
 	// DevSkipAuth skips all CF-Access header checks in dev mode.
 	// Enabled by GALLERY_DEV_SKIP_AUTH=true.

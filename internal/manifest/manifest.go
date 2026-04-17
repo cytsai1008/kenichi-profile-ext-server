@@ -4,6 +4,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -69,6 +70,18 @@ func (s *Store) Get() Manifest {
 	return cp
 }
 
+// HasEntry reports whether an entry with the given relativePath exists.
+func (s *Store) HasEntry(relativePath string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, e := range s.m.Entries {
+		if e.RelativePath == relativePath {
+			return true
+		}
+	}
+	return false
+}
+
 // Upsert inserts or updates an entry identified by RelativePath.
 // Fields not present in patch (empty strings) are preserved from the existing entry.
 // The disk file is written before in-memory state is updated; if the write fails,
@@ -89,6 +102,9 @@ func (s *Store) Upsert(patch Entry) error {
 	for i, e := range candidate {
 		if e.RelativePath == patch.RelativePath {
 			// Preserve fields that the caller left empty.
+			if patch.SourceHash == "" && e.SourceHash != "" {
+				log.Printf("[manifest] upsert %s: patch has no SourceHash, existing hash will be cleared", patch.RelativePath)
+			}
 			if patch.ViewerFile == "" {
 				patch.ViewerFile = e.ViewerFile
 			}

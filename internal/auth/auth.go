@@ -101,13 +101,12 @@ func (v *Verifier) VerifyUploadBody(r *http.Request, computedHashHex string) err
 // verifySignature checks the Ed25519 request signature and nonce.
 // computedBodyHashHex is the SHA-256 hex of the request body already computed by the caller.
 func (v *Verifier) verifySignature(r *http.Request, computedBodyHashHex string) error {
-	keyID := r.Header.Get("x-key-id")
 	timestampStr := r.Header.Get("x-timestamp")
 	nonce := r.Header.Get("x-nonce")
 	sentHashHex := r.Header.Get("x-content-sha256")
 	sigB64 := r.Header.Get("x-signature")
 
-	if keyID == "" || timestampStr == "" || nonce == "" || sentHashHex == "" || sigB64 == "" {
+	if timestampStr == "" || nonce == "" || sentHashHex == "" || sigB64 == "" {
 		return fmt.Errorf("missing required signature headers")
 	}
 

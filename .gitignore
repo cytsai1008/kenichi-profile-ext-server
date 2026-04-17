@@ -9,6 +9,9 @@
 .env
 *.local.yml
 
+# Local dev data volume
+/dev-data/
+
 # OS / editor
 .DS_Store
 Thumbs.db

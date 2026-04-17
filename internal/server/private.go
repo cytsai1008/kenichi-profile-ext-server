@@ -11,11 +11,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"kenichi-explicit-server/internal/auth"
 	"kenichi-explicit-server/internal/config"
 	"kenichi-explicit-server/internal/manifest"
 )
+
+// allowedUploadTypes is the set of Content-Type values accepted on upload endpoints.
+var allowedUploadTypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/webp": true,
+	"image/gif":  true,
+	"image/avif": true,
+}
 
 // maxUploadBytes is the per-request upload size cap (500 MB).
 const maxUploadBytes = 500 << 20
@@ -31,16 +41,12 @@ type uploadResponse struct {
 func RunPrivate(cfg *config.Config) error {
 	verifier := auth.NewVerifier(cfg.Ed25519PublicKey, cfg.DevMode, cfg.DevSkipAuth)
 
-	var store *manifest.Store
-	if !cfg.DevMode {
-		if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-			return fmt.Errorf("[private] create data dir: %w", err)
-		}
-		var err error
-		store, err = manifest.NewStore(cfg.DataDir)
-		if err != nil {
-			return fmt.Errorf("[private] load manifest: %w", err)
-		}
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		return fmt.Errorf("[private] create data dir: %w", err)
+	}
+	store, err := manifest.NewStore(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("[private] load manifest: %w", err)
 	}
 
 	p := &privateHandler{cfg: cfg, verifier: verifier, store: store}
@@ -69,8 +75,17 @@ func RunPrivate(cfg *config.Config) error {
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.PrivatePort)
-	log.Printf("[private] listening on %s (dev=%v)", addr, cfg.DevMode)
-	return http.ListenAndServe(addr, mux)
+	log.Printf("[private] listening on %s", addr)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           rejectDangerousQuery(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Uploads can be large; WriteTimeout covers the response only.
+		ReadTimeout:  0, // disabled — streaming uploads have no fixed deadline
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // privateHandler groups the cfg, verifier, and manifest store used by all handlers.
@@ -90,6 +105,7 @@ func (p *privateHandler) withSmallBodyAuth(next http.HandlerFunc) http.HandlerFu
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
+			log.Printf("[private] read body %s %s: %v", r.Method, r.URL.Path, err)
 			http.Error(w, "failed to read body", http.StatusBadRequest)
 			return
 		}
@@ -109,10 +125,6 @@ func (p *privateHandler) withSmallBodyAuth(next http.HandlerFunc) http.HandlerFu
 
 func (p *privateHandler) getManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if p.cfg.DevMode {
-		_ = json.NewEncoder(w).Encode(devManifest())
-		return
-	}
 	m := p.store.Get()
 	_ = json.NewEncoder(w).Encode(m)
 }
@@ -122,23 +134,20 @@ func (p *privateHandler) getManifest(w http.ResponseWriter, r *http.Request) {
 func (p *privateHandler) putManifestEntry(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Printf("[private] manifest PUT read body: %v", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
 	var entry manifest.Entry
 	if err := json.Unmarshal(body, &entry); err != nil {
+		log.Printf("[private] manifest PUT invalid JSON: %v", err)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
 	if !isValidRelPath(entry.RelativePath) {
+		log.Printf("[private] manifest PUT invalid relativePath: %q", entry.RelativePath)
 		http.Error(w, "invalid relativePath", http.StatusBadRequest)
-		return
-	}
-
-	if p.cfg.DevMode {
-		log.Printf("[private] dev: manifest upsert %s", entry.RelativePath)
-		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -147,6 +156,7 @@ func (p *privateHandler) putManifestEntry(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[private] manifest updated %s", entry.RelativePath)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -156,11 +166,6 @@ func (p *privateHandler) putManifestEntry(w http.ResponseWriter, r *http.Request
 
 func (p *privateHandler) getOriginal(w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
-	if p.cfg.DevMode {
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write(placeholderJPEG())
-		return
-	}
 	serveStoredFile(w, r, filepath.Join(p.cfg.DataDir, "_originals"), rel)
 }
 
@@ -169,16 +174,8 @@ func (p *privateHandler) getOriginal(w http.ResponseWriter, r *http.Request) {
 func (p *privateHandler) handleOriginalUpload(w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
 	if !isValidRelPath(rel) {
+		log.Printf("[private] upload originals invalid path: %q", rel)
 		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-
-	if p.cfg.DevMode {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, maxUploadBytes+1))
-		sum := sha256.Sum256(body)
-		hashHex := hex.EncodeToString(sum[:])
-		log.Printf("[private] dev upload originals: path=%s bytes=%d", rel, len(body))
-		respondJSON(w, http.StatusCreated, uploadResponse{Hash: hashHex, Size: int64(len(body))})
 		return
 	}
 
@@ -197,15 +194,12 @@ func (p *privateHandler) handleOriginalUpload(w http.ResponseWriter, r *http.Req
 		// Non-fatal: file is stored, manifest update can be retried.
 	}
 
+	log.Printf("[private] uploaded _originals/%s (%d bytes, sha256=%s)", rel, written, hashHex)
 	respondJSON(w, http.StatusCreated, uploadResponse{Hash: hashHex, Size: written})
 }
 
 func (p *privateHandler) deleteOriginal(w http.ResponseWriter, r *http.Request) {
 	rel := r.PathValue("path")
-	if p.cfg.DevMode {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	deleteStoredFile(w, filepath.Join(p.cfg.DataDir, "_originals"), rel)
 }
 
@@ -219,23 +213,15 @@ func (p *privateHandler) handleDerivedUpload(subdir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
 		if !isValidRelPath(rel) {
+			log.Printf("[private] upload %s invalid path: %q", subdir, rel)
 			http.Error(w, "invalid path", http.StatusBadRequest)
 			return
 		}
-
-		if p.cfg.DevMode {
-			body, _ := io.ReadAll(io.LimitReader(r.Body, maxUploadBytes+1))
-			sum := sha256.Sum256(body)
-			hashHex := hex.EncodeToString(sum[:])
-			log.Printf("[private] dev upload %s: path=%s bytes=%d", subdir, rel, len(body))
-			respondJSON(w, http.StatusCreated, uploadResponse{Hash: hashHex, Size: int64(len(body))})
-			return
-		}
-
 		hashHex, written, err := p.streamUpload(w, r, subdir, rel)
 		if err != nil {
 			return
 		}
+		log.Printf("[private] uploaded %s/%s (%d bytes, sha256=%s)", subdir, rel, written, hashHex)
 		respondJSON(w, http.StatusCreated, uploadResponse{Hash: hashHex, Size: written})
 	}
 }
@@ -243,10 +229,6 @@ func (p *privateHandler) handleDerivedUpload(subdir string) http.HandlerFunc {
 func (p *privateHandler) deleteFile(subdir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rel := r.PathValue("path")
-		if p.cfg.DevMode {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		deleteStoredFile(w, filepath.Join(p.cfg.DataDir, subdir), rel)
 	}
 }
@@ -259,6 +241,13 @@ func (p *privateHandler) deleteFile(subdir string) http.HandlerFunc {
 // SHA-256 of the body, verifies auth, then commits. Returns hex hash and byte count.
 // On any error it writes an appropriate HTTP response and returns a non-nil error.
 func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, subdir, rel string) (hashHex string, written int64, err error) {
+	// Reject uploads whose declared Content-Type is not an allowed image type.
+	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]))
+	if !allowedUploadTypes[ct] {
+		log.Printf("[private] upload %s/%s rejected content-type %q", subdir, rel, ct)
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return "", 0, fmt.Errorf("rejected content-type %q", ct)
+	}
 	destDir := filepath.Join(p.cfg.DataDir, subdir, filepath.Dir(filepath.FromSlash(rel)))
 	if mkErr := os.MkdirAll(destDir, 0755); mkErr != nil {
 		log.Printf("[private] mkdir %s: %v", destDir, mkErr)
@@ -266,8 +255,9 @@ func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, su
 		return "", 0, mkErr
 	}
 
-	destPath := filepath.Join(p.cfg.DataDir, subdir, filepath.FromSlash(rel))
-	if safeJoin(filepath.Join(p.cfg.DataDir, subdir), rel) == "" {
+	destPath := safeJoin(filepath.Join(p.cfg.DataDir, subdir), rel)
+	if destPath == "" {
+		log.Printf("[private] upload %s path escape attempt: %q", subdir, rel)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return "", 0, fmt.Errorf("path escape")
 	}
@@ -276,6 +266,7 @@ func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, su
 	if subdir == "_originals" {
 		if _, statErr := os.Stat(destPath); statErr == nil {
 			if r.URL.Query().Get("force") != "true" && r.URL.Query().Get("force") != "1" {
+				log.Printf("[private] upload conflict: %s/%s already exists", subdir, rel)
 				http.Error(w, "file exists; add ?force=true to overwrite", http.StatusConflict)
 				return "", 0, fmt.Errorf("conflict")
 			}
@@ -314,6 +305,7 @@ func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, su
 		if rmErr := os.Remove(tmpPath); rmErr != nil {
 			log.Printf("[private] cleanup oversized temp %s: %v", tmpPath, rmErr)
 		}
+		log.Printf("[private] upload %s/%s rejected: exceeds %d byte limit", subdir, rel, maxUploadBytes)
 		http.Error(w, "upload too large", http.StatusRequestEntityTooLarge)
 		return "", 0, fmt.Errorf("too large")
 	}
@@ -331,7 +323,9 @@ func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, su
 	}
 
 	if renameErr := os.Rename(tmpPath, destPath); renameErr != nil {
-		_ = os.Remove(tmpPath)
+		if rmErr := os.Remove(tmpPath); rmErr != nil {
+			log.Printf("[private] cleanup temp after rename failure %s: %v", tmpPath, rmErr)
+		}
 		log.Printf("[private] rename %s: %v", tmpPath, renameErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return "", 0, renameErr
@@ -346,17 +340,20 @@ func (p *privateHandler) streamUpload(w http.ResponseWriter, r *http.Request, su
 
 func serveStoredFile(w http.ResponseWriter, r *http.Request, dir, rel string) {
 	if !isValidRelPath(rel) {
+		log.Printf("[private] serve invalid path: %q", rel)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	abs := safeJoin(dir, rel)
 	if abs == "" {
+		log.Printf("[private] serve path escape attempt: %q", rel)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	f, err := os.Open(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
+			log.Printf("[private] serve not found: %s", rel)
 			http.Error(w, "not found", http.StatusNotFound)
 		} else {
 			log.Printf("[private] open %s: %v", abs, err)
@@ -367,20 +364,24 @@ func serveStoredFile(w http.ResponseWriter, r *http.Request, dir, rel string) {
 	defer f.Close()
 	stat, err := f.Stat()
 	if err != nil || stat.IsDir() {
+		log.Printf("[private] serve not found (stat): %s", rel)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	log.Printf("[private] served %s", rel)
 	w.Header().Set("Content-Type", detectContentType(rel))
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
 }
 
 func deleteStoredFile(w http.ResponseWriter, dir, rel string) {
 	if !isValidRelPath(rel) {
+		log.Printf("[private] delete invalid path: %q", rel)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	abs := safeJoin(dir, rel)
 	if abs == "" {
+		log.Printf("[private] delete path escape attempt: %q", rel)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -390,6 +391,7 @@ func deleteStoredFile(w http.ResponseWriter, dir, rel string) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[private] deleted %s", rel)
 	w.WriteHeader(http.StatusNoContent)
 }
 

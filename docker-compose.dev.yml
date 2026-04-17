@@ -1,4 +1,4 @@
-# Local development stack — no cloudflared, no real disk writes, no auth secrets needed.
+# Local development stack — no cloudflared, no auth secrets needed.
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up --build
@@ -17,6 +17,10 @@ services:
     environment:
       - GALLERY_DEV_MODE=true
       - GALLERY_DEV_SKIP_AUTH=true
+      - GALLERY_PUBLIC_PORT=${GALLERY_PUBLIC_PORT:-8080}
+      - GALLERY_PRIVATE_PORT=${GALLERY_PRIVATE_PORT:-8081}
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "${GALLERY_PUBLIC_PORT:-8080}:${GALLERY_PUBLIC_PORT:-8080}"
+      - "${GALLERY_PRIVATE_PORT:-8081}:${GALLERY_PRIVATE_PORT:-8081}"
+    volumes:
+      - ./dev-data:/data

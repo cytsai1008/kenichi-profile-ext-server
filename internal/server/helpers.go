@@ -1,15 +1,37 @@
 package server
 
 import (
-	"bytes"
-	"image"
-	"image/color"
-	"image/jpeg"
+	"log"
+	"net/http"
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 )
+
+// maxQueryStringBytes is the maximum raw query string length accepted.
+const maxQueryStringBytes = 512
+
+// rejectDangerousQuery is a middleware that blocks requests whose raw query
+// string contains null bytes, newline characters (log-injection), or exceeds
+// the allowed length.
+func rejectDangerousQuery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		qs := r.URL.RawQuery
+		if len(qs) > maxQueryStringBytes {
+			log.Printf("[request] query string too long (%d bytes): %s %s", len(qs), r.Method, r.URL.Path)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		for _, ch := range qs {
+			if ch == 0 || ch == '\n' || ch == '\r' {
+				log.Printf("[request] dangerous query string char %U: %s %s", ch, r.Method, r.URL.Path)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // isValidRelPath returns true if p is safe to use as a relative path within a
 // data directory: non-empty, no null bytes, canonical (no . or .. components),
@@ -62,38 +84,5 @@ func detectContentType(name string) string {
 		return "image/avif"
 	default:
 		return "application/octet-stream"
-	}
-}
-
-var (
-	placeholderOnce  sync.Once
-	cachedPlaceholder []byte
-)
-
-// placeholderJPEG returns a minimal 1×1 grey JPEG for dev mode responses.
-func placeholderJPEG() []byte {
-	placeholderOnce.Do(func() {
-		img := image.NewGray(image.Rect(0, 0, 1, 1))
-		img.SetGray(0, 0, color.Gray{Y: 128})
-		var buf bytes.Buffer
-		_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 1})
-		cachedPlaceholder = buf.Bytes()
-	})
-	return cachedPlaceholder
-}
-
-// devManifest returns a canned manifest for dev mode.
-func devManifest() map[string]interface{} {
-	return map[string]interface{}{
-		"version": 1,
-		"entries": []map[string]interface{}{
-			{
-				"relativePath": "gallery-explicit/test-image.jpg",
-				"sourceHash":   "0000000000000000000000000000000000000000000000000000000000000000",
-				"viewerFile":   "test-image.00000000.jpg",
-				"thumbFile":    "test-image.00000000.jpg",
-				"updatedAt":    "2026-01-01T00:00:00Z",
-			},
-		},
 	}
 }
